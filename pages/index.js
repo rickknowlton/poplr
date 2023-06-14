@@ -1,114 +1,346 @@
-import Head from 'next/head'
-import Image from 'next/image'
-import { Inter } from 'next/font/google'
-import styles from '@/styles/Home.module.css'
+import * as React from "react";
+import { useState, useEffect, useMemo } from "react";
+import {
+  Box,
+  createTheme,
+  ThemeProvider,
+  IconButton,
+  CssBaseline,
+} from "@mui/material";
+import { blue, pink } from "@mui/material/colors";
+import Brightness4Icon from "@mui/icons-material/Brightness4";
+import Brightness7Icon from "@mui/icons-material/Brightness7";
+import axios from "axios";
+import { URL } from "url";
+import Logo from "./components/Logo";
+import InputForm from "./components/InputForm";
+import OutputControl from "./components/OutputControl";
+import DirectoryOutput from "./components/DirectoryOutput";
 
-const inter = Inter({ subsets: ['latin'] })
+const IndexPage = () => {
+  const [markdown, setMarkdown] = useState("");
+  const [rawHtml, setRawHtml] = useState("");
+  const [outputFormat, setOutputFormat] = useState("markdown");
+  const [preview, setPreview] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [alert, setAlert] = useState({ open: false, message: "" });
 
-export default function Home() {
+  const theme = useMemo(
+    () =>
+      createTheme({
+        palette: {
+          mode: darkMode ? "dark" : "light",
+          primary: blue,
+          secondary: pink,
+          background: {
+            paper: darkMode ? "rgb(7, 39, 38)" : "lightgrey",
+          },
+        },
+        components: {
+          MuiButton: {
+            styleOverrides: {
+              outlined: {
+                borderColor: darkMode ? blue[500] : "black",
+                color: darkMode ? blue[500] : "black",
+              },
+              containedPrimary: {
+                backgroundColor: darkMode ? blue[500] : "black",
+                color: darkMode ? "white" : "white",
+              },
+            },
+          },
+        },
+      }),
+    [darkMode]
+  );
+
+  const sanitizeRepoUrl = (inputUrl) => {
+    try {
+      const url = new URL(inputUrl);
+      const pathName = url.pathname;
+      const repoUrl = pathName.startsWith("/") ? pathName.slice(1) : pathName;
+      return repoUrl;
+    } catch (err) {
+      return inputUrl;
+    }
+  };
+
+  const fetchRepoData = async (repoUrl, path = "") => {
+    setLoading(true);
+    const url = `https://api.github.com/repos/${repoUrl}/contents/${path}`;
+    try {
+      const { data } = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_GITHUB_TOKEN}`,
+        },
+      });
+
+      return data;
+    } catch (error) {
+      if (error.response && error.response.status === 404) {
+        throw new Error("Repository not found or is private");
+      } else {
+        throw new Error("An error occurred while fetching the repository data");
+      }
+    }
+  };
+
+  const traverseRepo = async (
+    repoUrl,
+    path = "",
+    depth = 0,
+    isLast = true,
+    prefix = "    "
+  ) => {
+    let markdown = "";
+
+    try {
+      setLoading(true);
+      const data = await fetchRepoData(repoUrl, path);
+
+      for (let i = 0; i < data.length; i++) {
+        const item = data[i];
+
+        let newPrefix = prefix + (isLast ? "    " : "│   ");
+
+        if (i === data.length - 1) {
+          markdown += `${prefix}${isLast ? "└── " : "├── "}${
+            item.type === "dir" ? "**" + item.name + "**" : item.name
+          }\n`;
+          if (item.type === "dir") {
+            markdown += await traverseRepo(
+              repoUrl,
+              `${path}${item.name}/`,
+              depth + 1,
+              true,
+              newPrefix
+            );
+          }
+        } else {
+          markdown += `${prefix}${"├── "}${
+            item.type === "dir" ? "**" + item.name + "**" : item.name
+          }\n`;
+          if (item.type === "dir") {
+            markdown += await traverseRepo(
+              repoUrl,
+              `${path}${item.name}/`,
+              depth + 1,
+              false,
+              newPrefix
+            );
+          }
+        }
+      }
+    } catch (error) {
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+
+    return markdown;
+  };
+
+  function formatMarkdown(markdown) {
+    return markdown.split("\n").join("  \n");
+  }
+
+  const beautify = require("js-beautify").html;
+
+  const markdownToHTML = (markdown) => {
+    const lines = markdown.split("\n");
+    let html = '<div class="tree">\n<ul>\n';
+
+    const generateHTML = (lines, depth = 0) => {
+      while (lines.length > 0) {
+        const line = lines[0];
+        const currentDepth = (line.match(/    /g) || []).length;
+
+        if (currentDepth > depth) {
+          html += "<ul>\n";
+          generateHTML(lines, currentDepth);
+          html += "</ul>\n</li>\n";
+        } else if (currentDepth < depth) {
+          return;
+        } else {
+          lines.shift();
+          const name = line
+            .trim()
+            .replace(/\*\*/g, "") // Replace ** (bold in markdown)
+            .replace(/(├── |└── )/g, ""); // Remove tree symbols
+          html += `<li>${name}`;
+          if (
+            !lines[0] ||
+            (lines[0].match(/    /g) || []).length <= currentDepth
+          ) {
+            html += "</li>\n";
+          }
+        }
+      }
+    };
+
+    generateHTML(lines, 1);
+
+    while (
+      (html.match(/<li>/g) || []).length > (html.match(/<\/li>/g) || []).length
+    ) {
+      html += "</li>\n";
+    }
+
+    html += "</ul>\n</div>\n";
+
+    return beautify(html);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape" && loading) {
+        setLoading(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [loading]);
+
+  useEffect(() => {
+    if (markdown) {
+      setRawHtml(markdownToHTML(markdown));
+    }
+  }, [markdown]);
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+
+    // Clear any existing markdown and alert.
+    setMarkdown("");
+    setAlert({ open: false, message: "" });
+
+    const rawRepoUrl = event.target.elements.repoUrl.value.trim();
+
+    if (!rawRepoUrl) {
+      setAlert({ open: true, message: "Please enter a GitHub Repository URL" });
+      return;
+    }
+
+    const repoUrl = sanitizeRepoUrl(rawRepoUrl);
+    try {
+      const markdown = await traverseRepo(repoUrl);
+      setMarkdown(markdown);
+    } catch (error) {
+      setLoading(false); // Stop the loading when an error occurs
+      setAlert({ open: true, message: error.message });
+    } finally {
+      // Clear the input field
+      event.target.elements.repoUrl.value = "";
+    }
+  };
+
+  const handleClear = () => {
+    setMarkdown("");
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(markdown);
+  };
+
+  const handlePreview = () => {
+    setPreview(!preview);
+  };
+
+  const handleDarkModeToggle = () => {
+    setDarkMode(!darkMode);
+  };
+
   return (
-    <>
-      <Head>
-        <title>Create Next App</title>
-        <meta name="description" content="Generated by create next app" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="icon" href="/favicon.ico" />
-      </Head>
-      <main className={styles.main}>
-        <div className={styles.description}>
-          <p>
-            Get started by editing&nbsp;
-            <code className={styles.code}>pages/index.js</code>
-          </p>
-          <div>
-            <a
-              href="https://vercel.com?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              By{' '}
-              <Image
-                src="/vercel.svg"
-                alt="Vercel Logo"
-                className={styles.vercelLogo}
-                width={100}
-                height={24}
-                priority
-              />
-            </a>
-          </div>
-        </div>
-
-        <div className={styles.center}>
-          <Image
-            className={styles.logo}
-            src="/next.svg"
-            alt="Next.js Logo"
-            width={180}
-            height={37}
-            priority
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Box
+        id="wrapper"
+        display="flex"
+        height="100vh"
+        style={{
+          background: darkMode
+            ? "radial-gradient(circle, #1a2049 0%, #13162f 100%)"
+            : "lightgrey",
+        }}
+      >
+        <Box
+          id="inputWrapper"
+          width="33.33%"
+          padding={2}
+          display="flex"
+          flexDirection="column"
+          alignItems="center"
+          justifyContent="center"
+          style={{
+            background: darkMode
+              ? "radial-gradient(circle, #1a2049 0%, #13162f 100%)"
+              : "lightgrey",
+          }}
+          minHeight="100vh"
+        >
+          <Logo darkMode={darkMode} />
+          <InputForm
+            markdown={markdown}
+            darkMode={darkMode}
+            handleSubmit={handleSubmit}
+            handleClear={handleClear}
+            alert={alert}
+            setAlert={setAlert}
           />
-        </div>
+        </Box>
+        <Box
+          id="outputWrapper"
+          width="66.67%"
+          style={{
+            background: darkMode
+              ? "radial-gradient(circle, #1a2049 0%, #13162f 100%)"
+              : "lightgrey",
+          }}
+          padding={2}
+          display="flex"
+          flexDirection="column"
+        >
+          <OutputControl
+            outputFormat={outputFormat}
+            setOutputFormat={setOutputFormat}
+            handleCopy={handleCopy}
+            handlePreview={handlePreview}
+            preview={preview}
+            darkMode={darkMode}
+          />
+          <DirectoryOutput
+            loading={loading}
+            markdown={markdown}
+            rawHtml={rawHtml}
+            preview={preview}
+            outputFormat={outputFormat}
+            darkMode={darkMode}
+            formatMarkdown={formatMarkdown}
+            markdownToHTML={markdownToHTML}
+          />
+        </Box>
+      </Box>
+      <IconButton
+        id="themeToggle"
+        sx={{
+          position: "fixed",
+          bottom: 16,
+          right: 16,
+          backgroundColor: darkMode ? "rgb(56, 56, 56)" : "lightgrey",
+          color: "white",
+          boxShadow: "0px 0px 10px rgba(0, 0, 0, 0.25)",
+        }}
+        onClick={handleDarkModeToggle}
+      >
+        {darkMode ? <Brightness7Icon /> : <Brightness4Icon />}
+      </IconButton>
+    </ThemeProvider>
+  );
+};
 
-        <div className={styles.grid}>
-          <a
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2 className={inter.className}>
-              Docs <span>-&gt;</span>
-            </h2>
-            <p className={inter.className}>
-              Find in-depth information about Next.js features and&nbsp;API.
-            </p>
-          </a>
-
-          <a
-            href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2 className={inter.className}>
-              Learn <span>-&gt;</span>
-            </h2>
-            <p className={inter.className}>
-              Learn about Next.js in an interactive course with&nbsp;quizzes!
-            </p>
-          </a>
-
-          <a
-            href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2 className={inter.className}>
-              Templates <span>-&gt;</span>
-            </h2>
-            <p className={inter.className}>
-              Discover and deploy boilerplate example Next.js&nbsp;projects.
-            </p>
-          </a>
-
-          <a
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2 className={inter.className}>
-              Deploy <span>-&gt;</span>
-            </h2>
-            <p className={inter.className}>
-              Instantly deploy your Next.js site to a shareable URL
-              with&nbsp;Vercel.
-            </p>
-          </a>
-        </div>
-      </main>
-    </>
-  )
-}
+export default IndexPage;
